@@ -1,1 +1,1 @@
-在ts目录下执行cargo run --bin acid_test_server打开服务器
+在ts目录下执行cargo run --manifest-path src\ts\Cargo.toml --bin acid_test_server打开服务器

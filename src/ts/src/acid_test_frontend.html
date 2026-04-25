@@ -53,6 +53,16 @@ h1 { text-align: center; font-size: 2rem; font-weight: 600; margin-bottom: 4px; 
 .loading-text { display: flex; align-items: center; justify-content: center; gap: 8px; color: #94a3b8; padding: 40px; }
 .status-bar { text-align: center; margin-top: 20px; color: #64748b; font-size: 0.85rem; }
 .logo-icon { display: inline-block; font-size: 1.8rem; vertical-align: middle; margin-right: 6px; }
+.mvcc-section { margin-top: 10px; padding: 10px 12px; background: #0f172a; border-radius: 6px; border-left: 3px solid #a78bfa; }
+.mvcc-title { font-weight: 600; color: #a78bfa; font-size: 0.85rem; margin-bottom: 6px; }
+.mvcc-key { font-size: 0.8rem; color: #94a3b8; margin-bottom: 4px; font-family: 'Consolas', 'Courier New', monospace; }
+.mvcc-chain { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 4px; }
+.mvcc-node { display: inline-flex; align-items: center; gap: 4px; background: #1e293b; border: 1px solid #334155; border-radius: 4px; padding: 2px 8px; font-size: 0.8rem; }
+.mvcc-version { color: #818cf8; font-weight: 600; }
+.mvcc-value { color: #e2e8f0; }
+.mvcc-arrow { color: #64748b; font-size: 1rem; margin: 0 2px; }
+.mvcc-deleted { border-color: #7f1d1d; }
+.mvcc-deleted .mvcc-value { color: #ef4444; }
 </style>
 </head>
 <body>
@@ -162,6 +172,29 @@ function displayResults(data) {
         const cls = isResult ? (t.pass ? 'pass-step' : 'fail-step') : '';
         return `<div class="step-line ${cls}">${s}</div>`;
       }).join('');
+
+      // Build MVCC version table
+      const mvcc = t.mvcc_versions || [];
+      let mvccHtml = '';
+      if (mvcc.length > 0) {
+        mvccHtml = '<div class="mvcc-section"><div class="mvcc-title">MVCC 多版本信息</div>';
+        for (const vi of mvcc) {
+          mvccHtml += `<div class="mvcc-key">键: "${vi.key}"</div><div class="mvcc-chain">`;
+          for (const ve of vi.versions) {
+            const isDeleted = ve.value === '__DELETED__';
+            mvccHtml += `<span class="mvcc-node ${isDeleted ? 'mvcc-deleted' : ''}">
+              <span class="mvcc-version">ver ${ve.version}</span>
+              <span class="mvcc-value">'${isDeleted ? '已删除' : ve.value}'</span>
+            </span>`;
+            if (ve !== vi.versions[vi.versions.length - 1]) {
+              mvccHtml += '<span class="mvcc-arrow">&rarr;</span>';
+            }
+          }
+          mvccHtml += '</div>';
+        }
+        mvccHtml += '</div>';
+      }
+
       html += `<div class="test-card ${passClass}">
         <div class="header" onclick="toggleSteps(this)">
           <div>
@@ -172,6 +205,7 @@ function displayResults(data) {
         </div>
         <div class="detail">${t.detail}</div>
         <div class="steps">${stepsHtml || '<div class="step-line">无详细步骤日志</div>'}</div>
+        ${mvccHtml}
       </div>`;
     }
     html += '</div>';
