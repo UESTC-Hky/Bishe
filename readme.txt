@@ -1,0 +1,1 @@
+在ts目录下执行cargo run --bin acid_test_server打开服务器

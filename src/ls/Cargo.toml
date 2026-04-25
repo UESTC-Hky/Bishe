@@ -1,0 +1,24 @@
+[package]
+name = "ls"
+version = "0.1.0"
+edition = "2024"
+
+[dev-dependencies]
+tempfile = "3.3"
+tokio = { version = "1.0", features = ["full"] }
+
+[dependencies]
+tonic = { workspace = true }
+prost = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+rocksdb = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+rpc = { path = "../rpc" }
+
+[build-dependencies]
+tonic-build = "0.12.3"

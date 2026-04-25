@@ -1,0 +1,19 @@
+syntax = "proto3";
+package common;
+
+
+message KV {
+    bytes key = 1;
+    bytes value = 2;
+}
+
+message ReadSet {
+    repeated KV kvs = 2;
+}
+
+message WriteSet {
+    // upsert
+    repeated KV upsert_kvs = 2;
+    // delete
+    repeated bytes deleted_keys = 3;
+}

@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ACID 事务特性测试套件</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: 'Segoe UI', 'Microsoft YaHei', Tahoma, Geneva, Verdana, sans-serif; background: #0f172a; color: #e2e8f0; padding: 20px; min-height: 100vh; }
+.container { max-width: 960px; margin: 0 auto; }
+h1 { text-align: center; font-size: 2rem; font-weight: 600; margin-bottom: 4px; color: #f1f5f9; letter-spacing: 1px; }
+.subtitle { text-align: center; color: #94a3b8; margin-bottom: 30px; font-size: 0.9rem; }
+.controls { display: flex; justify-content: center; gap: 12px; margin-bottom: 30px; flex-wrap: wrap; }
+.btn { padding: 12px 32px; border: none; border-radius: 8px; font-size: 1rem; font-weight: 600; cursor: pointer; transition: all 0.2s; }
+.btn-primary { background: #3b82f6; color: white; }
+.btn-primary:hover { background: #2563eb; transform: translateY(-1px); box-shadow: 0 4px 12px rgba(59,130,246,0.4); }
+.btn-primary:disabled { background: #475569; cursor: not-allowed; transform: none; box-shadow: none; }
+.btn-secondary { background: #334155; color: #e2e8f0; }
+.btn-secondary:hover { background: #475569; }
+.summary { background: #1e293b; border-radius: 12px; padding: 24px; margin-bottom: 24px; display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 16px; }
+.summary-item { text-align: center; padding: 16px; border-radius: 8px; background: #0f172a; }
+.summary-item .value { font-size: 2rem; font-weight: 700; }
+.summary-item .label { font-size: 0.8rem; color: #94a3b8; margin-top: 4px; }
+.summary-item.pass .value { color: #22c55e; }
+.summary-item.fail .value { color: #ef4444; }
+.summary-item.total .value { color: #3b82f6; }
+.summary-item.time .value { color: #a78bfa; font-size: 1.5rem; }
+.progress-bar { height: 6px; background: #1e293b; border-radius: 3px; margin-bottom: 24px; overflow: hidden; }
+.progress-fill { height: 100%; border-radius: 3px; transition: width 0.5s ease; background: linear-gradient(90deg, #22c55e, #3b82f6); }
+.category { margin-bottom: 24px; }
+.category h2 { font-size: 1.1rem; font-weight: 600; padding: 8px 12px; background: #1e293b; border-radius: 8px; display: flex; align-items: center; gap: 10px; margin-bottom: 12px; border-left: 4px solid #3b82f6; }
+.category h2 .badge { font-size: 0.75rem; background: #334155; padding: 2px 10px; border-radius: 10px; color: #94a3b8; }
+.test-card { background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 14px 16px; margin-bottom: 8px; transition: all 0.2s; }
+.test-card:hover { border-color: #475569; }
+.test-card .header { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; cursor: pointer; user-select: none; }
+.test-card .name { font-weight: 600; color: #f1f5f9; }
+.test-card .desc { color: #94a3b8; font-size: 0.85rem; margin-top: 2px; }
+.test-card .status { font-size: 0.75rem; font-weight: 700; padding: 4px 12px; border-radius: 12px; white-space: nowrap; }
+.test-card.pass { border-color: #166534; }
+.test-card.pass .status { background: #052e16; color: #22c55e; }
+.test-card.fail { border-color: #7f1d1d; }
+.test-card.fail .status { background: #450a0a; color: #ef4444; }
+.test-card .detail { margin-top: 8px; padding: 8px 10px; background: #0f172a; border-radius: 6px; color: #94a3b8; font-size: 0.85rem; font-family: 'Consolas', 'Courier New', monospace; word-break: break-all; }
+.test-card .expand-icon { font-size: 0.7rem; color: #64748b; margin-left: 4px; }
+.test-card .steps { display: none; margin-top: 10px; padding: 10px 12px; background: #0f172a; border-radius: 6px; border-left: 3px solid #3b82f6; }
+.test-card .steps.open { display: block; }
+.test-card .step-line { padding: 3px 0; color: #94a3b8; font-size: 0.82rem; font-family: 'Consolas', 'Courier New', monospace; line-height: 1.5; }
+.test-card .step-line::before { content: '> '; color: #3b82f6; font-weight: bold; }
+.test-card .step-line.pass-step::before { content: '✓ '; color: #22c55e; }
+.test-card .step-line.fail-step::before { content: '✗ '; color: #ef4444; }
+.spinner { display: inline-block; width: 20px; height: 20px; border: 3px solid #334155; border-top-color: #3b82f6; border-radius: 50%; animation: spin 0.8s linear infinite; margin-right: 8px; vertical-align: middle; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.loading-text { display: flex; align-items: center; justify-content: center; gap: 8px; color: #94a3b8; padding: 40px; }
+.status-bar { text-align: center; margin-top: 20px; color: #64748b; font-size: 0.85rem; }
+.logo-icon { display: inline-block; font-size: 1.8rem; vertical-align: middle; margin-right: 6px; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1><span class="logo-icon">&#x2699;</span> ACID 事务特性测试套件</h1>
+  <p class="subtitle">原子性 (Atomicity) | 一致性 (Consistency) | 隔离性 (Isolation) | 持久性 (Durability)</p>
+
+  <div class="controls">
+    <button class="btn btn-primary" id="runBtn" onclick="runTests()">运行全部测试</button>
+    <button class="btn btn-secondary" onclick="clearResults()">清除结果</button>
+  </div>
+
+  <div class="progress-bar" id="progressBar">
+    <div class="progress-fill" id="progressFill" style="width:0%"></div>
+  </div>
+
+  <div class="summary" id="summary">
+    <div class="summary-item total">
+      <div class="value" id="totalCount">16</div>
+      <div class="label">总测试数</div>
+    </div>
+    <div class="summary-item pass">
+      <div class="value" id="passCount">-</div>
+      <div class="label">通过</div>
+    </div>
+    <div class="summary-item fail">
+      <div class="value" id="failCount">-</div>
+      <div class="label">失败</div>
+    </div>
+    <div class="summary-item time">
+      <div class="value" id="timeMs">-</div>
+      <div class="label">耗时</div>
+    </div>
+  </div>
+
+  <div id="results">
+    <div class="loading-text" id="loadingIndicator" style="display:none;">
+      <span class="spinner"></span> 正在运行 ACID 测试...
+    </div>
+  </div>
+
+  <div class="status-bar" id="statusBar">点击「运行全部测试」开始测试</div>
+</div>
+
+<script>
+async function runTests() {
+  const btn = document.getElementById('runBtn');
+  const loading = document.getElementById('loadingIndicator');
+  const statusBar = document.getElementById('statusBar');
+  const progressFill = document.getElementById('progressFill');
+
+  btn.disabled = true;
+  btn.textContent = '运行中...';
+  loading.style.display = 'flex';
+  progressFill.style.width = '10%';
+  statusBar.textContent = '正在运行 ACID 测试...';
+
+  try {
+    const response = await fetch('/api/run-tests');
+    const data = await response.json();
+    displayResults(data);
+    const passText = data.all_pass ? '全部通过' : '存在失败';
+    statusBar.textContent = `测试完成，耗时 ${data.elapsed_ms}ms - ${passText}`;
+  } catch (err) {
+    document.getElementById('results').innerHTML = `<div style="color:#ef4444;text-align:center;padding:40px;">错误: ${err.message}</div>`;
+    statusBar.textContent = '运行测试时出错';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '运行全部测试';
+    loading.style.display = 'none';
+    progressFill.style.width = '100%';
+    setTimeout(() => { progressFill.style.width = '0%'; }, 800);
+  }
+}
+
+function displayResults(data) {
+  document.getElementById('passCount').textContent = data.passed;
+  document.getElementById('failCount').textContent = data.failed;
+  document.getElementById('timeMs').textContent = data.elapsed_ms + 'ms';
+
+  const categories = {};
+  const order = ['Atomicity', 'Consistency', 'Isolation', 'Durability'];
+  const catLabels = {
+    'Atomicity': '原子性 (Atomicity)',
+    'Consistency': '一致性 (Consistency)',
+    'Isolation': '隔离性 (Isolation)',
+    'Durability': '持久性 (Durability)'
+  };
+
+  for (const t of data.tests) {
+    if (!categories[t.category]) categories[t.category] = [];
+    categories[t.category].push(t);
+  }
+
+  let html = '';
+  for (const cat of order) {
+    const tests = categories[cat] || [];
+    const passCount = tests.filter(t => t.pass).length;
+    const totalCount = tests.length;
+    html += `<div class="category">
+      <h2>${catLabels[cat] || cat} <span class="badge">${passCount}/${totalCount} 通过</span></h2>`;
+    for (const t of tests) {
+      const passClass = t.pass ? 'pass' : 'fail';
+      const steps = t.steps || [];
+      const stepsHtml = steps.map((s, i) => {
+        const isResult = s.includes('结果验证');
+        const cls = isResult ? (t.pass ? 'pass-step' : 'fail-step') : '';
+        return `<div class="step-line ${cls}">${s}</div>`;
+      }).join('');
+      html += `<div class="test-card ${passClass}">
+        <div class="header" onclick="toggleSteps(this)">
+          <div>
+            <div class="name">${t.name}: ${t.description}</div>
+            <div class="desc">${t.category}</div>
+          </div>
+          <span class="status">${t.pass ? '通过' : '失败'} <span class="expand-icon">&#x25BC;</span></span>
+        </div>
+        <div class="detail">${t.detail}</div>
+        <div class="steps">${stepsHtml || '<div class="step-line">无详细步骤日志</div>'}</div>
+      </div>`;
+    }
+    html += '</div>';
+  }
+  document.getElementById('results').innerHTML = html;
+}
+
+function toggleSteps(headerEl) {
+  const card = headerEl.closest('.test-card');
+  const steps = card.querySelector('.steps');
+  const icon = card.querySelector('.expand-icon');
+  if (steps) {
+    steps.classList.toggle('open');
+    icon.textContent = steps.classList.contains('open') ? '\u25B2' : '\u25BC';
+  }
+}
+
+function clearResults() {
+  document.getElementById('passCount').textContent = '-';
+  document.getElementById('failCount').textContent = '-';
+  document.getElementById('timeMs').textContent = '-';
+  document.getElementById('results').innerHTML = '';
+  document.getElementById('statusBar').textContent = '结果已清除。点击「运行全部测试」开始测试';
+}
+</script>
+</body>
+</html>

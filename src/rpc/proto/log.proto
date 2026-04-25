@@ -1,0 +1,41 @@
+syntax = "proto3";
+import "google/protobuf/wrappers.proto";
+import "common.proto";
+package log;
+
+service Log {
+    rpc AppendEntry(AppendEntryRequest) returns (AppendEntryResponse); // 供 ts 调用
+    rpc FetchEntries(FetchEntriesRequest) returns (FetchEntriesResponse); // 供 ss 调用， 不包含prev_commit_version
+    rpc GetMaxCommittedVersion(GetMaxCommittedVersionRequest) returns (GetMaxCommittedVersionResponse);
+}
+
+message LogEntry {
+    uint64 prev_commit_version = 1;
+    uint64 commit_version = 2;
+    uint32 graph_id = 3;
+    common.WriteSet write_set = 4;
+}
+
+message AppendEntryRequest {
+    LogEntry log_entry = 1;
+}
+
+message AppendEntryResponse {
+    bool ok = 1; 
+    string message = 2;
+}
+
+message FetchEntriesRequest {
+    uint64 prev_commit_version = 1;
+    uint32 max_entries = 2;
+}
+
+message FetchEntriesResponse {
+    repeated LogEntry log_entries = 1;
+}
+
+message GetMaxCommittedVersionRequest {}
+
+message GetMaxCommittedVersionResponse {
+    uint64 max_committed_version = 1;
+}

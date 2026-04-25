@@ -1,0 +1,171 @@
+syntax = "proto3";
+package ts;
+
+import "common.proto";
+import "google/protobuf/wrappers.proto";
+
+// 事务服务
+service TransactionService {
+    // 事务生命周期
+    rpc BeginTransaction(BeginTransactionRequest) returns (BeginTransactionResponse);
+    rpc CommitTransaction(CommitTransactionRequest) returns (CommitTransactionResponse);
+    rpc RollbackTransaction(RollbackTransactionRequest) returns (RollbackTransactionResponse);
+    
+    // 数据操作
+    rpc Get(GetRequest) returns (GetResponse);
+    rpc Set(SetRequest) returns (SetResponse);
+    rpc Delete(DeleteRequest) returns (DeleteResponse);
+    rpc MultiGet(MultiGetRequest) returns (MultiGetResponse);
+    rpc BatchWrite(BatchWriteRequest) returns (BatchWriteResponse);
+    
+    // 图管理（转发到SS）
+    rpc CreateGraph(CreateGraphRequest) returns (google.protobuf.BoolValue);
+    rpc DropGraph(DropGraphRequest) returns (google.protobuf.BoolValue);
+    rpc FlushGraph(FlushGraphRequest) returns (google.protobuf.BoolValue);
+    
+    // 管理接口
+    rpc Ping(PingRequest) returns (PingResponse);
+    rpc GetStatus(StatusRequest) returns (StatusResponse);
+}
+
+// 隔离级别
+enum IsolationLevel {
+    READ_COMMITTED = 0;
+    SNAPSHOT = 1;      // 默认
+    SERIALIZABLE = 2;
+}
+
+// ============= 事务管理消息 =============
+message BeginTransactionRequest {
+    uint32 graph_id = 1;
+    IsolationLevel isolation_level = 2;
+    optional uint64 timeout_ms = 3;
+}
+
+message BeginTransactionResponse {
+    uint64 transaction_id = 1;
+    uint64 snapshot_version = 2;
+    bool success = 3;
+    string message = 4;
+}
+
+message CommitTransactionRequest {
+    uint64 transaction_id = 1;
+}
+
+message CommitTransactionResponse {
+    bool success = 1;
+    uint64 commit_version = 2;
+    string message = 3;
+}
+
+message RollbackTransactionRequest {
+    uint64 transaction_id = 1;
+}
+
+message RollbackTransactionResponse {
+    bool success = 1;
+    string message = 2;
+}
+
+// ============= 数据操作消息 =============
+message GetRequest {
+    uint64 transaction_id = 1;
+    bytes key = 2;
+    optional uint64 version = 3;
+}
+
+message GetResponse {
+    optional bytes value = 1;
+    uint64 read_version = 2;
+    bool success = 3;
+    string message = 4;
+}
+
+message MultiGetRequest {
+    uint64 transaction_id = 1;
+    repeated bytes keys = 2;
+    optional uint64 version = 3;
+}
+
+message MultiGetResponse {
+    repeated GetResponse values = 1;
+    bool success = 2;
+    string message = 3;
+}
+
+message SetRequest {
+    uint64 transaction_id = 1;
+    bytes key = 2;
+    bytes value = 3;
+}
+
+message SetResponse {
+    bool success = 1;
+    string message = 2;
+}
+
+message DeleteRequest {
+    uint64 transaction_id = 1;
+    bytes key = 2;
+}
+
+message DeleteResponse {
+    bool success = 1;
+    string message = 2;
+}
+
+message BatchWriteRequest {
+    uint64 transaction_id = 1;
+    repeated SetOperation sets = 2;
+    repeated bytes deletes = 3;
+}
+
+message SetOperation {
+    bytes key = 1;
+    bytes value = 2;
+}
+
+message BatchWriteResponse {
+    bool success = 1;
+    uint32 sets_applied = 2;
+    uint32 deletes_applied = 3;
+    string message = 4;
+}
+
+// ============= 图管理消息 =============
+message CreateGraphRequest {
+    uint32 graph_id = 1;
+}
+
+message DropGraphRequest {
+    uint32 graph_id = 1;
+}
+
+message FlushGraphRequest {
+    uint32 graph_id = 1;
+}
+
+// ============= 管理消息 =============
+message PingRequest {
+    string client_id = 1;
+}
+
+message PingResponse {
+    bool alive = 1;
+    uint64 server_time_ms = 2;
+    string version = 3;
+}
+
+message StatusRequest {
+    bool include_metrics = 1;
+}
+
+message StatusResponse {
+    bool active = 1;
+    uint32 active_transactions = 2;
+    uint64 total_transactions = 3;
+    uint64 uptime_ms = 4;
+    map<string, string> metrics = 5;
+    repeated string connected_servers = 6;
+}

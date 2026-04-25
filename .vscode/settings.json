@@ -1,0 +1,17 @@
+{
+    // 只在save时触发RA检测,对于中大项目比较合适
+    "rust-analyzer.checkOnSave": true, 
+    /*
+        //小项目或小型模块开发可以采用实时检测
+        "rust-analyzer.checkOnSave": "disable", // 禁用保存触发，改用更高频率模式
+        "rust-analyzer.diagnostics.enable": true, // 启用实时诊断
+        "rust-analyzer.diagnostics.onChange": true // 在文件变更时触发检查
+    */
+    // 使用指定路径的RA工具
+    // "rust-analyzer.server.path":  
+    // "~/.rustup/toolchains/nightly-2023-05-06-x86_64-unknown-linux-gnu/bin/rust-analyzer",
+    // 强制指定工作路径为当前路径
+    "rust-analyzer.linkedProjects": [
+        "./Cargo.toml"
+    ]
+} 

@@ -1,0 +1,46 @@
+syntax = "proto3";
+import "google/protobuf/wrappers.proto";
+import "common.proto";
+package storage;
+
+
+service Storage {
+    rpc Create(CreateRequest) returns (google.protobuf.BoolValue); //创建某个图库
+    rpc Get(GetRequest) returns (GetResponse);
+    rpc MultiGet(MultiGetRequest) returns (MultiGetResponse);
+    rpc Flush(FlushRequest) returns (google.protobuf.BoolValue); //某个图库数据落盘
+    rpc Drop(DropRequest) returns (google.protobuf.BoolValue); //删除某个图库
+
+}
+
+message CreateRequest {
+    uint32 graph_id = 1;
+}
+
+message GetRequest {
+    uint32 graph_id = 1;
+    bytes key = 2;    
+    uint64 version = 3;
+}
+
+message GetResponse {
+    optional bytes value = 1;
+}
+
+message MultiGetRequest {
+    uint32 graph_id = 1;
+    repeated bytes keys = 2;
+    uint64 version = 3;
+}
+
+message MultiGetResponse {
+    repeated GetResponse values = 1;
+}
+
+message FlushRequest {
+    uint32 graph_id = 1;
+}
+
+message DropRequest {
+    uint32 graph_id = 1;
+}
