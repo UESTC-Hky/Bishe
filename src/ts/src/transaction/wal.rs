@@ -1,6 +1,6 @@
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tracing::{error, info, warn};
@@ -64,22 +64,55 @@ pub struct WalManager {
 
 impl WalManager {
     /// 创建 WAL 管理器
+    /// 扫描已存在的 WAL 文件以确定起始序号，避免与新文件冲突
     pub fn new(wal_dir: PathBuf, enable_fsync: bool) -> Result<Self> {
         // 确保 WAL 目录存在
         fs::create_dir_all(&wal_dir).map_err(|e| TsError::Io(e))?;
 
-        let mut manager = Self {
+        // 扫描已存在的 WAL 文件，找到最大的序号
+        let max_seq = Self::find_max_seq_no(&wal_dir)?;
+
+        let manager = Self {
             wal_dir,
             current_file: Arc::new(Mutex::new(None)),
-            current_seq_no: Arc::new(Mutex::new(0)),
+            current_seq_no: Arc::new(Mutex::new(max_seq)),
             enable_fsync,
             last_checkpoint: Arc::new(Mutex::new(0)),
         };
 
-        // 初始化 WAL 文件
+        // 创建新的 WAL 文件（序号会在 max_seq 基础上递增）
         manager.rotate_wal_file()?;
 
         Ok(manager)
+    }
+
+    /// 扫描 WAL 目录，找到最大的文件序号
+    fn find_max_seq_no(wal_dir: &Path) -> Result<u64> {
+        let mut max_seq = 0u64;
+        if !wal_dir.exists() {
+            return Ok(0);
+        }
+        let entries = match fs::read_dir(wal_dir) {
+            Ok(entries) => entries,
+            Err(_) => return Ok(0),
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().map(|e| e == "log").unwrap_or(false) {
+                if let Some(name) = path.file_stem() {
+                    let name = name.to_string_lossy();
+                    // 文件名格式: wal_0000000001 -> 提取序号 1
+                    if name.starts_with("wal_") {
+                        if let Ok(num) = name[4..].parse::<u64>() {
+                            if num > max_seq {
+                                max_seq = num;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(max_seq)
     }
 
     /// 获取WAL目录路径
@@ -95,12 +128,27 @@ impl WalManager {
         let file_name = format!("wal_{:010}.log", *seq_no);
         let file_path = self.wal_dir.join(&file_name);
 
-        let file = OpenOptions::new()
-            .create(true)
+        // 使用 create_new 确保不会覆盖已有文件（已有文件由恢复过程读取）
+        // 如果文件居然存在（序号冲突），回退到 truncate 模式
+        let file = match OpenOptions::new()
+            .create_new(true)
             .write(true)
             .read(true)
             .open(&file_path)
-            .map_err(|e| TsError::Io(e))?;
+        {
+            Ok(f) => f,
+            Err(_) => {
+                // 文件已存在（异常情况），截断并复用
+                warn!("WAL 文件 {:?} 已存在，将截断复用", file_path);
+                OpenOptions::new()
+                    .create(true)
+                    .write(true)
+                    .read(true)
+                    .truncate(true)
+                    .open(&file_path)
+                    .map_err(|e| TsError::Io(e))?
+            }
+        };
 
         info!("创建新 WAL 文件: {:?}", file_path);
 
@@ -210,6 +258,7 @@ impl WalManager {
     }
 
     /// 从文件中读取所有 WAL 条目（用于恢复）
+    /// 对部分写入的条目会优雅跳过，不影响其他有效条目
     pub fn read_all_entries(&self) -> Result<Vec<WalEntry>> {
         let mut entries = Vec::new();
         let wal_dir_entries = fs::read_dir(&self.wal_dir).map_err(|e| TsError::Io(e))?;
@@ -227,21 +276,68 @@ impl WalManager {
         file_paths.sort();
 
         for file_path in &file_paths {
-            let mut file = File::open(file_path).map_err(|e| TsError::Io(e))?;
+            // 尝试打开文件；如果文件正在被写入（Windows 文件锁）则跳过
+            let mut file = match File::open(file_path) {
+                Ok(f) => f,
+                Err(e) => {
+                    warn!("无法打开 WAL 文件 {:?} 进行恢复: {}，跳过", file_path, e);
+                    continue;
+                }
+            };
+
+            // 检查文件是否为空，提前跳过
+            let metadata = match file.metadata() {
+                Ok(m) => m,
+                Err(e) => {
+                    warn!("无法读取 WAL 文件 {:?} 元数据: {}，跳过", file_path, e);
+                    continue;
+                }
+            };
+            if metadata.len() == 0 {
+                continue;
+            }
 
             loop {
                 let mut len_buf = [0u8; 4];
                 match file.read_exact(&mut len_buf) {
                     Ok(()) => {
                         let len = u32::from_be_bytes(len_buf) as usize;
+                        // 对异常大的长度值做保护（防止损坏的长度前缀分配过大内存）
+                        if len > 100 * 1024 * 1024 {
+                            // 100MB 上限
+                            warn!(
+                                "WAL 文件 {:?} 中读取到异常长度 {} 字节，可能文件已损坏，跳过剩余部分",
+                                file_path, len
+                            );
+                            break;
+                        }
                         let mut data = vec![0u8; len];
-                        file.read_exact(&mut data).map_err(|e| TsError::Io(e))?;
-
-                        if let Ok(entry) = self.deserialize_entry(&data) {
-                            entries.push(entry);
+                        match file.read_exact(&mut data) {
+                            Ok(()) => {
+                                if let Ok(entry) = self.deserialize_entry(&data) {
+                                    entries.push(entry);
+                                } else {
+                                    warn!(
+                                        "WAL 文件 {:?} 中反序列化条目失败，跳过该条目",
+                                        file_path
+                                    );
+                                }
+                            }
+                            Err(ref e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                                // 数据部分不完整（崩溃时部分写入），跳过该条目不继续读
+                                warn!(
+                                    "WAL 文件 {:?} 中条目数据不完整（部分写入），跳过剩余部分",
+                                    file_path
+                                );
+                                break;
+                            }
+                            Err(e) => {
+                                return Err(TsError::Io(e));
+                            }
                         }
                     }
                     Err(ref e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                        // 长度前缀不完整，文件正常结束
                         break;
                     }
                     Err(e) => {

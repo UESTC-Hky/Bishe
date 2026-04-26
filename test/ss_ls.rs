@@ -1,72 +1,41 @@
 // src/bin/ss_ls.rs
-use std::future::Future;
-use std::pin::Pin;
-use std::time::{Duration, Instant};
+use std::env;
 use tonic::transport::Channel;
 use tonic::Request;
 
 use rpc::ts::transaction_service_client::TransactionServiceClient;
 use rpc::ts::{
-    BeginTransactionRequest, CommitTransactionRequest, GetRequest, IsolationLevel, SetRequest,
+    BeginTransactionRequest, CommitTransactionRequest, DeleteRequest, GetRequest, IsolationLevel,
+    SetRequest,
 };
 
-// 辅助函数：将 Option<Vec<u8>> 转换为可显示的字符串
-fn opt_vec_display(val: &Option<Vec<u8>>) -> String {
-    match val {
-        Some(v) => String::from_utf8_lossy(v).to_string(),
-        None => "None".to_string(),
-    }
-}
-
-// ---------- 客户端定义 ----------
+// ---------- TS 客户端 ----------
 #[derive(Clone)]
 struct TsClient {
     client: TransactionServiceClient<Channel>,
-    addr: String,
 }
 
 impl TsClient {
     async fn new(addr: String) -> Result<Self, String> {
-        println!("连接TS服务: {}", addr);
         let client = TransactionServiceClient::connect(addr.clone())
             .await
-            .map_err(|e| format!("连接TS失败: {}", e))?;
-        println!("TS连接成功");
-        Ok(Self { client, addr })
+            .map_err(|e| format!("连接 TS 失败: {}", e))?;
+        Ok(Self { client })
     }
 
     async fn begin_transaction(
         &mut self,
         graph_id: u32,
-        isolation_level: IsolationLevel,
         timeout_ms: u64,
     ) -> Result<rpc::ts::BeginTransactionResponse, String> {
-        println!(
-            "开始事务: graph={}, isolation={:?}",
-            graph_id, isolation_level
-        );
         let request = BeginTransactionRequest {
             graph_id,
-            isolation_level: isolation_level as i32,
+            isolation_level: IsolationLevel::Snapshot as i32,
             timeout_ms: Some(timeout_ms),
         };
         match self.client.begin_transaction(Request::new(request)).await {
-            Ok(response) => {
-                let resp = response.into_inner();
-                if resp.success {
-                    println!(
-                        "事务开始成功: id={}, snapshot={}",
-                        resp.transaction_id, resp.snapshot_version
-                    );
-                } else {
-                    println!("事务开始失败: {}", resp.message);
-                }
-                Ok(resp)
-            }
-            Err(e) => {
-                println!("开始事务RPC错误: {}", e);
-                Err(format!("RPC错误: {}", e))
-            }
+            Ok(response) => Ok(response.into_inner()),
+            Err(e) => Err(format!("开始事务 RPC 错误: {}", e)),
         }
     }
 
@@ -74,22 +43,10 @@ impl TsClient {
         &mut self,
         transaction_id: u64,
     ) -> Result<rpc::ts::CommitTransactionResponse, String> {
-        println!("提交事务: {}", transaction_id);
         let request = CommitTransactionRequest { transaction_id };
         match self.client.commit_transaction(Request::new(request)).await {
-            Ok(response) => {
-                let resp = response.into_inner();
-                if resp.success {
-                    println!("事务提交成功: version={}", resp.commit_version);
-                } else {
-                    println!("事务提交失败: {}", resp.message);
-                }
-                Ok(resp)
-            }
-            Err(e) => {
-                println!("提交事务RPC错误: {}", e);
-                Err(format!("RPC错误: {}", e))
-            }
+            Ok(response) => Ok(response.into_inner()),
+            Err(e) => Err(format!("提交事务 RPC 错误: {}", e)),
         }
     }
 
@@ -99,21 +56,14 @@ impl TsClient {
         key: Vec<u8>,
         version: Option<u64>,
     ) -> Result<rpc::ts::GetResponse, String> {
-        println!("读取数据: tx={}, key_len={}", transaction_id, key.len());
         let request = GetRequest {
             transaction_id,
             key,
             version,
         };
         match self.client.get(Request::new(request)).await {
-            Ok(response) => {
-                let resp = response.into_inner();
-                Ok(resp)
-            }
-            Err(e) => {
-                println!("读取数据RPC错误: {}", e);
-                Err(format!("RPC错误: {}", e))
-            }
+            Ok(response) => Ok(response.into_inner()),
+            Err(e) => Err(format!("读取数据 RPC 错误: {}", e)),
         }
     }
 
@@ -123,299 +73,260 @@ impl TsClient {
         key: Vec<u8>,
         value: Vec<u8>,
     ) -> Result<rpc::ts::SetResponse, String> {
-        println!(
-            "写入数据: tx={}, key_len={}, value_len={}",
-            transaction_id,
-            key.len(),
-            value.len()
-        );
         let request = SetRequest {
             transaction_id,
             key,
             value,
         };
         match self.client.set(Request::new(request)).await {
-            Ok(response) => {
-                let resp = response.into_inner();
-                if resp.success {
-                    println!("写入成功");
-                } else {
-                    println!("写入失败: {}", resp.message);
+            Ok(response) => Ok(response.into_inner()),
+            Err(e) => Err(format!("写入数据 RPC 错误: {}", e)),
+        }
+    }
+
+    async fn delete(
+        &mut self,
+        transaction_id: u64,
+        key: Vec<u8>,
+    ) -> Result<rpc::ts::DeleteResponse, String> {
+        let request = DeleteRequest {
+            transaction_id,
+            key,
+        };
+        match self.client.delete(Request::new(request)).await {
+            Ok(response) => Ok(response.into_inner()),
+            Err(e) => Err(format!("删除数据 RPC 错误: {}", e)),
+        }
+    }
+}
+
+// ---------- 辅助函数 ----------
+fn str_to_vec(s: &str) -> Vec<u8> {
+    s.as_bytes().to_vec()
+}
+
+// 定义操作类型
+#[derive(Debug)]
+enum Operation {
+    Add { key: Vec<u8>, value: Vec<u8> },
+    Delete { key: Vec<u8> },
+    Read { key: Vec<u8> },
+}
+
+// 提交模式
+enum CommitMode {
+    Post,   // 立即提交
+    Unpost, // 暂不提交，等待后续 commit 命令
+}
+
+// 解析命令行参数，返回 (图ID, 操作列表, 提交模式)
+fn parse_args(args: &[String]) -> Result<(u32, Vec<Operation>, CommitMode), String> {
+    if args.len() < 3 {
+        return Err("至少需要图ID和一个操作".to_string());
+    }
+
+    // 检测模式标志（-post 或 -unpost）可能在最后，也可能在中间？我们假设在最后，先检查最后几个参数
+    let mut mode = CommitMode::Post;
+    let mut effective_args = args.to_vec();
+    if effective_args.last() == Some(&"-post".to_string()) {
+        mode = CommitMode::Post;
+        effective_args.pop();
+    } else if effective_args.last() == Some(&"-unpost".to_string()) {
+        mode = CommitMode::Unpost;
+        effective_args.pop();
+    }
+
+    // 第一个参数是操作类型（add/delete/read）
+    let first_cmd = &effective_args[0];
+    let graph_id: u32 = effective_args[1].parse().map_err(|_| "图ID必须为数字")?;
+
+    let mut ops = Vec::new();
+    let mut i = 2; // 当前索引指向第一个操作的参数
+
+    // 解析第一个操作
+    match first_cmd.as_str() {
+        "add" => {
+            if i + 1 >= effective_args.len() {
+                return Err("add 命令需要键和值".to_string());
+            }
+            let key = str_to_vec(&effective_args[i]);
+            let value = str_to_vec(&effective_args[i + 1]);
+            ops.push(Operation::Add { key, value });
+            i += 2;
+        }
+        "delete" => {
+            if i >= effective_args.len() {
+                return Err("delete 命令需要键".to_string());
+            }
+            let key = str_to_vec(&effective_args[i]);
+            ops.push(Operation::Delete { key });
+            i += 1;
+        }
+        "read" => {
+            if i >= effective_args.len() {
+                return Err("read 命令需要键".to_string());
+            }
+            let key = str_to_vec(&effective_args[i]);
+            ops.push(Operation::Read { key });
+            i += 1;
+        }
+        _ => return Err(format!("未知操作: {}", first_cmd)),
+    }
+
+    // 继续解析后续操作，遇到 "+" 分隔符
+    while i < effective_args.len() {
+        let token = &effective_args[i];
+        if token == "+" {
+            i += 1;
+            if i >= effective_args.len() {
+                break;
+            }
+            // 下一个应该是操作类型
+            let cmd = &effective_args[i];
+            i += 1;
+            match cmd.as_str() {
+                "add" => {
+                    if i + 1 >= effective_args.len() {
+                        return Err("add 命令需要键和值".to_string());
+                    }
+                    let key = str_to_vec(&effective_args[i]);
+                    let value = str_to_vec(&effective_args[i + 1]);
+                    ops.push(Operation::Add { key, value });
+                    i += 2;
                 }
-                Ok(resp)
+                "delete" => {
+                    if i >= effective_args.len() {
+                        return Err("delete 命令需要键".to_string());
+                    }
+                    let key = str_to_vec(&effective_args[i]);
+                    ops.push(Operation::Delete { key });
+                    i += 1;
+                }
+                "read" => {
+                    if i >= effective_args.len() {
+                        return Err("read 命令需要键".to_string());
+                    }
+                    let key = str_to_vec(&effective_args[i]);
+                    ops.push(Operation::Read { key });
+                    i += 1;
+                }
+                _ => return Err(format!("未知操作: {}", cmd)),
             }
-            Err(e) => {
-                println!("写入数据RPC错误: {}", e);
-                Err(format!("RPC错误: {}", e))
-            }
+        } else {
+            return Err(format!("意外的参数: {}，期望 '+' 分隔符", token));
         }
     }
-}
 
-// ---------- 辅助函数：重试读取直到成功 ----------
-async fn retry_get(
-    ts_client: &mut TsClient,
-    graph_id: u32,
-    key: Vec<u8>,
-    expected: Vec<u8>,
-    timeout: Duration,
-) -> Result<(), String> {
-    let start = Instant::now();
-    while start.elapsed() < timeout {
-        let begin = ts_client
-            .begin_transaction(graph_id, IsolationLevel::Snapshot, 5000)
-            .await?;
-        let get = ts_client
-            .get(begin.transaction_id, key.clone(), None)
-            .await?;
-        ts_client.commit_transaction(begin.transaction_id).await?;
-
-        if get.value == Some(expected.clone()) {
-            return Ok(());
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    Err(format!(
-        "重试超时 {} 秒，未获取到期望值。期望: {:?}",
-        timeout.as_secs(),
-        String::from_utf8_lossy(&expected)
-    ))
-}
-
-// ---------- 测试1：原子性 ----------
-async fn test_atomicity() -> Result<(), String> {
-    println!("\n=== 测试1：原子性（多键写入） ===");
-    let mut client = TsClient::new("http://127.0.0.1:25003".to_string()).await?;
-    let graph_id = 1;
-
-    let begin = client
-        .begin_transaction(graph_id, IsolationLevel::Snapshot, 5000)
-        .await?;
-    let tx_id = begin.transaction_id;
-
-    client
-        .set(tx_id, b"atom_key1".to_vec(), b"value1".to_vec())
-        .await?;
-    client
-        .set(tx_id, b"atom_key2".to_vec(), b"value2".to_vec())
-        .await?;
-
-    let commit = client.commit_transaction(tx_id).await?;
-    if !commit.success {
-        return Err(format!("事务提交失败: {}", commit.message));
-    }
-    println!("  提交成功，版本: {}", commit.commit_version);
-
-    // 重试验证两个键都存在
-    retry_get(
-        &mut client,
-        graph_id,
-        b"atom_key1".to_vec(),
-        b"value1".to_vec(),
-        Duration::from_secs(10),
-    )
-    .await?;
-    retry_get(
-        &mut client,
-        graph_id,
-        b"atom_key2".to_vec(),
-        b"value2".to_vec(),
-        Duration::from_secs(10),
-    )
-    .await?;
-    println!("✓ 原子性测试通过");
-    Ok(())
-}
-
-// ---------- 测试2：冲突检测（写-写冲突） ----------
-async fn test_conflict_detection() -> Result<(), String> {
-    println!("\n=== 测试2：冲突检测（写-写冲突） ===");
-    let mut client = TsClient::new("http://127.0.0.1:25003".to_string()).await?;
-    let graph_id = 1;
-
-    // 事务 A 写入
-    let tx_a = client
-        .begin_transaction(graph_id, IsolationLevel::Snapshot, 5000)
-        .await?;
-    client
-        .set(tx_a.transaction_id, b"conflict_key".to_vec(), b"A".to_vec())
-        .await?;
-
-    // 事务 B 写入同一键
-    let tx_b = client
-        .begin_transaction(graph_id, IsolationLevel::Snapshot, 5000)
-        .await?;
-    client
-        .set(tx_b.transaction_id, b"conflict_key".to_vec(), b"B".to_vec())
-        .await?;
-
-    // 提交 A（应成功）
-    let commit_a = client.commit_transaction(tx_a.transaction_id).await?;
-    if !commit_a.success {
-        return Err("事务 A 提交失败".into());
-    }
-    println!("  事务 A 提交成功");
-
-    // 提交 B（应失败，因为写-写冲突）
-    let commit_b = client.commit_transaction(tx_b.transaction_id).await;
-    match commit_b {
-        Ok(resp) if !resp.success => println!("  事务 B 提交失败（预期）: {}", resp.message),
-        Ok(_) => return Err("事务 B 应该失败但成功了".into()),
-        Err(e) if e.contains("冲突") || e.contains("Conflict") => {
-            println!("  事务 B 提交失败（预期）: {}", e)
-        }
-        Err(e) => return Err(format!("事务 B 提交时发生错误: {}", e)),
+    if ops.is_empty() {
+        return Err("没有有效的操作".to_string());
     }
 
-    // 验证最终值为 A
-    let read_tx = client
-        .begin_transaction(graph_id, IsolationLevel::Snapshot, 5000)
-        .await?;
-    let read = client
-        .get(read_tx.transaction_id, b"conflict_key".to_vec(), None)
-        .await?;
-    if read.value != Some(b"A".to_vec()) {
-        return Err(format!(
-            "最终值应为 A, 实际: {}",
-            opt_vec_display(&read.value)
-        ));
-    }
-    println!("✓ 冲突检测测试通过");
-    Ok(())
-}
-
-// ---------- 测试3：多版本读取 ----------
-async fn test_multiversion() -> Result<(), String> {
-    println!("\n=== 测试3：多版本读取 ===");
-    let mut client = TsClient::new("http://127.0.0.1:25003".to_string()).await?;
-    let graph_id = 1;
-
-    // 写入版本 1
-    let tx1 = client
-        .begin_transaction(graph_id, IsolationLevel::Snapshot, 5000)
-        .await?;
-    client
-        .set(tx1.transaction_id, b"mv_key".to_vec(), b"v1".to_vec())
-        .await?;
-    let commit1 = client.commit_transaction(tx1.transaction_id).await?;
-    if !commit1.success {
-        return Err("版本1提交失败".into());
-    }
-    println!("  版本1提交，版本号: {}", commit1.commit_version);
-
-    // 等待 SS 应用
-    tokio::time::sleep(Duration::from_secs(2)).await;
-
-    // 写入版本 2
-    let tx2 = client
-        .begin_transaction(graph_id, IsolationLevel::Snapshot, 5000)
-        .await?;
-    client
-        .set(tx2.transaction_id, b"mv_key".to_vec(), b"v2".to_vec())
-        .await?;
-    let commit2 = client.commit_transaction(tx2.transaction_id).await?;
-    if !commit2.success {
-        return Err("版本2提交失败".into());
-    }
-    println!("  版本2提交，版本号: {}", commit2.commit_version);
-
-    // 等待 SS 应用
-    tokio::time::sleep(Duration::from_secs(2)).await;
-
-    // 在快照版本1下读取，应得到 v1
-    let read_tx_v1 = client
-        .begin_transaction(graph_id, IsolationLevel::Snapshot, 5000)
-        .await?;
-    let read_v1 = client
-        .get(
-            read_tx_v1.transaction_id,
-            b"mv_key".to_vec(),
-            Some(commit1.commit_version),
-        )
-        .await?;
-    if read_v1.value != Some(b"v1".to_vec()) {
-        return Err(format!(
-            "版本1读取错误，期望 v1, 实际: {}",
-            opt_vec_display(&read_v1.value)
-        ));
-    }
-    println!("  在版本1下读取正确");
-
-    // 在快照版本2下读取，应得到 v2
-    let read_tx_v2 = client
-        .begin_transaction(graph_id, IsolationLevel::Snapshot, 5000)
-        .await?;
-    let read_v2 = client
-        .get(
-            read_tx_v2.transaction_id,
-            b"mv_key".to_vec(),
-            Some(commit2.commit_version),
-        )
-        .await?;
-    if read_v2.value != Some(b"v2".to_vec()) {
-        return Err(format!(
-            "版本2读取错误，期望 v2, 实际: {}",
-            opt_vec_display(&read_v2.value)
-        ));
-    }
-    println!("  在版本2下读取正确");
-
-    // 在最新版本（不指定版本）下读取，应得到 v2
-    let read_tx_latest = client
-        .begin_transaction(graph_id, IsolationLevel::Snapshot, 5000)
-        .await?;
-    let read_latest = client
-        .get(read_tx_latest.transaction_id, b"mv_key".to_vec(), None)
-        .await?;
-    if read_latest.value != Some(b"v2".to_vec()) {
-        return Err(format!(
-            "最新版本读取错误，期望 v2, 实际: {}",
-            opt_vec_display(&read_latest.value)
-        ));
-    }
-    println!("  最新版本读取正确");
-
-    println!("✓ 多版本读取测试通过");
-    Ok(())
+    Ok((graph_id, ops, mode))
 }
 
 // ---------- 主函数 ----------
-type TestFunc = Box<dyn Fn() -> Pin<Box<dyn Future<Output = Result<(), String>>>>>;
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("=== 分布式事务键值存储系统核心功能测试 ===");
-    println!("注意：请确保 LS、SS、TS 服务已在 127.0.0.1 相应端口启动。");
+    let args: Vec<String> = env::args().collect();
+    if args.len() < 2 {
+        eprintln!("用法: {} <命令> [参数...]", args[0]);
+        eprintln!("命令:");
+        eprintln!("  add/delete/read 图ID 参数... [+ 更多操作...] [-post|-unpost]");
+        eprintln!("    例如: add 1 key1 value1 + add 1 key2 value2");
+        eprintln!("  commit <事务ID>");
+        return Ok(());
+    }
 
-    let tests: Vec<(&str, TestFunc)> = vec![
-        ("原子性", Box::new(|| Box::pin(test_atomicity()))),
-        ("冲突检测", Box::new(|| Box::pin(test_conflict_detection()))),
-        ("多版本读取", Box::new(|| Box::pin(test_multiversion()))),
-    ];
+    let mut client = TsClient::new("http://127.0.0.1:25003".to_string()).await?;
 
-    let mut passed = 0;
-    let mut failed = 0;
+    // 检查是否为 commit 命令
+    if args[1] == "commit" {
+        if args.len() != 3 {
+            eprintln!("用法: {} commit <事务ID>", args[0]);
+            return Ok(());
+        }
+        let tx_id: u64 = args[2].parse().map_err(|_| "事务ID必须为数字")?;
+        let commit = client.commit_transaction(tx_id).await?;
+        if !commit.success {
+            eprintln!("提交事务失败: {}", commit.message);
+        } else {
+            println!("事务 {} 提交成功，版本: {}", tx_id, commit.commit_version);
+        }
+        return Ok(());
+    }
 
-    for (name, test_fn) in tests {
-        print!("运行测试: {} ... ", name);
-        match test_fn().await {
-            Ok(_) => {
-                println!("通过");
-                passed += 1;
+    // 否则，解析 add/delete/read 命令
+    // 传入从 args[1] 开始的切片（即跳过程序名）
+    let (graph_id, ops, mode) = parse_args(&args[1..])?;
+
+    // 开启事务
+    let begin = client.begin_transaction(graph_id, 30000).await?;
+    if !begin.success {
+        eprintln!("开始事务失败: {}", begin.message);
+        return Ok(());
+    }
+    println!("事务开始，ID: {}", begin.transaction_id);
+
+    // 执行所有操作
+    for op in ops {
+        match op {
+            Operation::Add { key, value } => {
+                let resp = client
+                    .set(begin.transaction_id, key.clone(), value.clone())
+                    .await?;
+                if !resp.success {
+                    eprintln!("add 操作失败: {}", resp.message);
+                    return Ok(());
+                }
+                println!(
+                    "add 成功: {} = {}",
+                    String::from_utf8_lossy(&key),
+                    String::from_utf8_lossy(&value)
+                );
             }
-            Err(e) => {
-                println!("失败: {}", e);
-                failed += 1;
+            Operation::Delete { key } => {
+                let resp = client.delete(begin.transaction_id, key.clone()).await?;
+                if !resp.success {
+                    eprintln!("delete 操作失败: {}", resp.message);
+                    return Ok(());
+                }
+                println!("delete 成功: {}", String::from_utf8_lossy(&key));
+            }
+            Operation::Read { key } => {
+                let resp = client.get(begin.transaction_id, key.clone(), None).await?;
+                if !resp.success {
+                    eprintln!("read 操作失败: {}", resp.message);
+                    return Ok(());
+                }
+                match resp.value {
+                    Some(v) => println!(
+                        "读取到: {} = {}",
+                        String::from_utf8_lossy(&key),
+                        String::from_utf8_lossy(&v)
+                    ),
+                    None => println!("读取到: {} 不存在", String::from_utf8_lossy(&key)),
+                }
             }
         }
-        tokio::time::sleep(Duration::from_secs(1)).await;
     }
 
-    println!("\n测试结果: 通过 {}, 失败 {}", passed, failed);
-    if failed == 0 {
-        println!("✓ 所有核心功能测试通过");
-        Ok(())
-    } else {
-        Err("存在测试失败".into())
+    // 根据模式提交
+    match mode {
+        CommitMode::Post => {
+            let commit = client.commit_transaction(begin.transaction_id).await?;
+            if !commit.success {
+                eprintln!("提交事务失败: {}", commit.message);
+            } else {
+                println!("事务提交成功，版本: {}", commit.commit_version);
+            }
+        }
+        CommitMode::Unpost => {
+            println!(
+                "事务未提交，请使用 `commit {}` 手动提交",
+                begin.transaction_id
+            );
+        }
     }
+
+    Ok(())
 }
