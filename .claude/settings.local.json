@@ -25,7 +25,18 @@
       "Bash(cmd //c \"start \\\\\"SS\\\\\" target\\\\\\\\debug\\\\\\\\ss.exe --data-path ./ss_data\")",
       "Bash(cmd //c \"start \\\\\"TS\\\\\" target\\\\\\\\debug\\\\\\\\ts.exe --ls-addr 127.0.0.1:25002 --ss-addr 127.0.0.1:25001\")",
       "Bash(target/debug/ce.exe delete *)",
-      "Bash(powershell -Command \"Stop-Process -Name ts -Force -ErrorAction SilentlyContinue\")"
+      "Bash(powershell -Command \"Stop-Process -Name ts -Force -ErrorAction SilentlyContinue\")",
+      "Bash(xxd \"ceshi3\\(geli\\).bat\")",
+      "Bash(xxd \"ceshi1\\(yuanzi\\).bat\")",
+      "Bash(python3 -c ' *)",
+      "Bash(python -c ' *)",
+      "Bash(cp \"ceshi1\\(yuanzi\\).bat\" /tmp/ceshi1_copy.bat)",
+      "Bash(cp \"ceshi3\\(geli\\).bat\" /tmp/ceshi3_copy.bat)",
+      "Bash(unix2dos /tmp/ceshi1_copy.bat /tmp/ceshi3_copy.bat)",
+      "Read(//tmp/**)",
+      "Bash(perl -pe 's/\\\\n/\\\\r\\\\n/' \"ceshi3\\(geli\\).bat\")",
+      "Bash(powershell -Command \"Get-Content 'ceshi1\\(yuanzi\\).bat' -Raw | Out-File -FilePath 'ceshi3\\(geli\\).bat' -Encoding ASCII -NoNewline\")",
+      "Bash(python *)"
     ]
   }
 }
