@@ -1,0 +1,31 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo build *)",
+      "Bash(cargo run *)",
+      "Bash(curl -s http://127.0.0.1:25002)",
+      "Bash(curl -s http://127.0.0.1:25001)",
+      "Bash(curl -s http://127.0.0.1:25003)",
+      "Bash(target/debug/ce.exe add *)",
+      "Bash(target/debug/ce.exe read *)",
+      "Bash(rm -rf ./ls_data ./wal_logs /tmp/ss_data /tmp/ls_data /tmp/ss_unit_test)",
+      "Read(//d/tmp/ss_data/**)",
+      "Bash(target/debug/ce.exe commit *)",
+      "Bash(taskkill /f /im ls.exe /im ss.exe /im ts.exe)",
+      "Bash(target/debug/ls.exe --data-path ./ls_data --listen-addr 127.0.0.1:25002)",
+      "Bash(target/debug/ss.exe --data-path ./ss_data)",
+      "Bash(tasklist)",
+      "Bash(target/debug/ts.exe --ls-addr 127.0.0.1:25002 --ss-addr 127.0.0.1:25001)",
+      "Bash(powershell -Command \"Stop-Process -Name ls,ss,ts -Force -ErrorAction SilentlyContinue\")",
+      "Bash(cmd /c \"start \"LS\" target\\\\debug\\\\ls.exe --data-path ./ls_data --listen-addr 127.0.0.1:25002\")",
+      "Bash(cmd /c \"start \"\" \"target\\\\debug\\\\ls.exe\" --data-path ./ls_data --listen-addr 127.0.0.1:25002\")",
+      "Bash(cmd /c \"start \"\" \"target\\\\debug\\\\ss.exe\" --data-path ./ss_data\")",
+      "Bash(cmd /c \"start \"\" \"target\\\\debug\\\\ts.exe\" --ls-addr 127.0.0.1:25002 --ss-addr 127.0.0.1:25001\")",
+      "Bash(cmd //c \"start \\\\\"LS\\\\\" target\\\\\\\\debug\\\\\\\\ls.exe --data-path ./ls_data --listen-addr 127.0.0.1:25002\")",
+      "Bash(cmd //c \"start \\\\\"SS\\\\\" target\\\\\\\\debug\\\\\\\\ss.exe --data-path ./ss_data\")",
+      "Bash(cmd //c \"start \\\\\"TS\\\\\" target\\\\\\\\debug\\\\\\\\ts.exe --ls-addr 127.0.0.1:25002 --ss-addr 127.0.0.1:25001\")",
+      "Bash(target/debug/ce.exe delete *)",
+      "Bash(powershell -Command \"Stop-Process -Name ts -Force -ErrorAction SilentlyContinue\")"
+    ]
+  }
+}

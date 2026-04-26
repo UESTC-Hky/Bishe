@@ -3,99 +3,142 @@ chcp 65001 > nul
 
 echo.
 echo ============================================================
-echo      ACID 测试1：原子性 (Atomicity)
-echo      事务中所有操作要么全部完成，要么全部不完成
+echo      ACID Test 1: Atomicity
+echo      All-or-nothing transaction commit
 echo ============================================================
 echo.
 
 :: ============================================================
-:: 1.1 多键原子提交
+:: 0. Clean old data and start fresh servers
 :: ============================================================
-echo [测试 1.1] 多键原子提交
-echo   操作：一个事务写入 K1=v1, K2=v2, K3=v3，提交后分别读取
-echo ---------- 执行写入事务 ----------
-cargo run --bin ce add 1 at_k1 v1 + add at_k2 v2 + add at_k3 v3
+echo [Setup] Stopping old servers...
+taskkill /f /im ls.exe /im ss.exe /im ts.exe > nul 2>&1
+timeout /t 1 /nobreak > nul
+echo [Setup] Cleaning old data...
+rmdir /s /q ls_data ss_data wal_logs 2>nul
+echo [Setup] Starting LS on port 25002...
+start "" target\debug\ls.exe --data-path ./ls_data --listen-addr 127.0.0.1:25002
+timeout /t 3 /nobreak > nul
+echo [Setup] Starting SS on port 25001...
+start "" target\debug\ss.exe --data-path ./ss_data
+timeout /t 5 /nobreak > nul
+echo [Setup] Starting TS on port 25003...
+start "" target\debug\ts.exe --ls-addr 127.0.0.1:25002 --ss-addr 127.0.0.1:25001
+timeout /t 3 /nobreak > nul
+echo [Setup] All servers started.
 echo.
-echo ---------- 独立事务分别读取验证 ----------
-echo 读 at_k1:
-cargo run --bin ce read 1 at_k1
-echo 读 at_k2:
-cargo run --bin ce read 1 at_k2
-echo 读 at_k3:
-cargo run --bin ce read 1 at_k3
-echo [预期] 三个键全部存在，值分别为 v1, v2, v3
+
+set CE=target\debug\ce.exe
+
+:: ============================================================
+:: 1.1 Multi-key atomic commit
+:: ============================================================
+echo [Test 1.1] Multi-key atomic commit
+echo   Write K1=v1, K2=v2, K3=v3 in one transaction, then read each
+echo ---------- Writing ----------
+%CE% add 1 at_k1 v1 + add at_k2 v2 + add at_k3 v3
+echo.
+echo ---------- Waiting for Log2Storage sync (3s) ----------
+timeout /t 3 /nobreak > nul
+echo ---------- Read back ----------
+echo Read at_k1:
+%CE% read 1 at_k1
+echo Read at_k2:
+%CE% read 1 at_k2
+echo Read at_k3:
+%CE% read 1 at_k3
+echo [Expected] at_k1=v1, at_k2=v2, at_k3=v3
 echo.
 
 :: ============================================================
-:: 1.2+1.3 未提交事务不可见 + 提交后可见
+:: 1.2 + 1.3 Uncommitted data not visible / visible after commit
 :: ============================================================
-echo [测试 1.2] 未提交事务完全不可见
-echo   操作：T1 写入 at_uncommit=secret 但不提交；T2、T3 分别读取
-echo ---------- T1 开启，写入但不提交 (-unpost) ----------
-cargo run --bin ce add 1 at_uncommit secret -unpost > "%TEMP%\ac_tx.txt" 2>&1
+echo [Test 1.2] Uncommitted data NOT visible to other transactions
+echo   T1 writes at_uncommit=secret but does NOT commit
+echo   T2 and T3 read independently
+echo ---------- T1: write without commit (-unpost) ----------
+%CE% add 1 at_uncommit secret -unpost > "%TEMP%\ac_tx.txt" 2>&1
 type "%TEMP%\ac_tx.txt"
 echo.
-echo ---------- 自动提取事务ID并暂存 ----------
-for /f "tokens=3 delims=: " %%a in ('findstr /c:"事务开始，ID:" "%TEMP%\ac_tx.txt"') do set "AC_TXID=%%a"
+echo ---------- Extract transaction ID ----------
+for /f "tokens=2 delims=: " %%a in ('findstr /c:"ID" "%TEMP%\ac_tx.txt"') do set "AC_TXID=%%a"
+echo Extracted ID: %AC_TXID%
 echo.
-echo ---------- T2 独立事务读 at_uncommit ----------
-cargo run --bin ce read 1 at_uncommit
-echo [预期] 返回"不存在"（未提交数据对其他事务不可见）
-echo ---------- T3 独立事务读 at_uncommit ----------
-cargo run --bin ce read 1 at_uncommit
-echo [预期] 返回"不存在"（再次确认）
+echo ---------- T2: independent read ----------
+%CE% read 1 at_uncommit
+echo [Expected] Key not found (uncommitted data invisible)
+echo ---------- T3: independent read ----------
+%CE% read 1 at_uncommit
+echo [Expected] Key not found (confirmed)
 echo.
 
-echo [测试 1.3] 提交后数据才可见
-echo   操作：自动提交 T1，T4 读取验证
-echo ---------- 提交 T1 (ID: %AC_TXID%) ----------
-cargo run --bin ce commit %AC_TXID%
+echo [Test 1.3] Data visible after commit
+echo   Commit T1, then T4 reads
+echo ---------- Commit T1 (ID: %AC_TXID%) ----------
+%CE% commit %AC_TXID%
 echo.
-echo ---------- T4 独立事务读 at_uncommit ----------
-cargo run --bin ce read 1 at_uncommit
-echo [预期] 读到 "secret"（一旦提交，全部操作生效）
+echo ---------- Wait for Log2Storage sync (3s) ----------
+timeout /t 3 /nobreak > nul
+echo ---------- T4: independent read ----------
+%CE% read 1 at_uncommit
+echo [Expected] Read "secret" (once committed, all writes take effect)
 del "%TEMP%\ac_tx.txt" 2>nul
 echo.
 
 :: ============================================================
-:: 1.4 事务内中间态不对外泄露
+:: 1.4 Intermediate state isolation
 :: ============================================================
-echo [测试 1.4] 事务内中间态不对外泄露
-echo   操作：一个事务内 写 at_mid=v1 -删 at_mid -写 at_mid=v2，提交后读
-cargo run --bin ce add 1 at_mid v1 + delete at_mid + add at_mid v2
+echo [Test 1.4] Intermediate state not leaked
+echo   Single transaction: write v1 - delete - write v2, then commit and read
+%CE% add 1 at_mid v1 + delete at_mid + add at_mid v2
 echo.
-echo ---------- 独立事务读 at_mid ----------
-cargo run --bin ce read 1 at_mid
-echo [预期] 读到 "v2"（中间态 v1 和被删除态均不可见）
+echo ---------- Wait for Log2Storage sync (3s) ----------
+timeout /t 3 /nobreak > nul
+echo ---------- Independent read ----------
+%CE% read 1 at_mid
+echo [Expected] Read "v2" (intermediate v1 and deleted state invisible)
 echo.
 
 :: ============================================================
-:: 1.5 写-写冲突回滚
+:: 1.5 Write-write conflict rollback
 :: ============================================================
-echo [测试 1.5] 写-写冲突回滚
-echo   操作：T1 写 at_conflict=old(-unpost)；T2 写 at_conflict=new 并提交；
-echo         T1 commit 应失败；T3 读 at_conflict 应是 new
-echo ---------- T1 写入 at_conflict=old，不提交 ----------
-cargo run --bin ce add 1 at_conflict old -unpost > "%TEMP%\ac_tx2.txt" 2>&1
+echo [Test 1.5] Write-write conflict rollback
+echo   T1 writes at_conflict=old (no commit)
+echo   T2 writes at_conflict=new and commits (first-committer wins)
+echo   T1 commit should FAIL. T3 should read "new"
+echo ---------- T1: write old, no commit ----------
+%CE% add 1 at_conflict old -unpost > "%TEMP%\ac_tx2.txt" 2>&1
 type "%TEMP%\ac_tx2.txt"
 echo.
-for /f "tokens=3 delims=: " %%a in ('findstr /c:"事务开始，ID:" "%TEMP%\ac_tx2.txt"') do set "AC_TXID2=%%a"
-echo ---------- T2 写入 at_conflict=new，提交（先提交者胜）----------
-cargo run --bin ce add 1 at_conflict new
+for /f "tokens=2 delims=: " %%a in ('findstr /c:"ID" "%TEMP%\ac_tx2.txt"') do set "AC_TXID2=%%a"
+echo Extracted ID: %AC_TXID2%
 echo.
-echo ---------- 尝试提交 T1 (ID: %AC_TXID2%) ----------
-cargo run --bin ce commit %AC_TXID2%
-echo [预期] 提交失败（写-写冲突）
+echo ---------- T2: write new and commit ----------
+%CE% add 1 at_conflict new
 echo.
-echo ---------- T3 读 at_conflict ----------
-cargo run --bin ce read 1 at_conflict
-echo [预期] 读到 "new"（T1 的 old 仿佛从未存在过）
+echo ---------- T1: attempt commit (should FAIL) ----------
+%CE% commit %AC_TXID2%
+echo [Expected] Commit failed (write-write conflict)
+echo.
+echo ---------- Wait for Log2Storage sync (3s) ----------
+timeout /t 3 /nobreak > nul
+echo ---------- T3: read ----------
+%CE% read 1 at_conflict
+echo [Expected] Read "new" (T1's old value never existed)
 del "%TEMP%\ac_tx2.txt" 2>nul
 echo.
 
+:: ============================================================
+:: Cleanup
+:: ============================================================
 echo ============================================================
-echo      原子性测试完成
-echo      请检查上述每个 [预期] 是否与实际输出一致
+echo      Atomicity test complete
+echo      Check each [Expected] against actual output
 echo ============================================================
 echo.
+echo [Cleanup] Stopping servers...
+taskkill /f /im ls.exe /im ss.exe /im ts.exe > nul 2>&1
+echo [Cleanup] Removing test data...
+rmdir /s /q ls_data ss_data wal_logs 2>nul
+echo [Cleanup] Done.
 pause

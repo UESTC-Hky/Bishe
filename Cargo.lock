@@ -1537,6 +1537,7 @@ name = "ss"
 version = "0.1.0"
 dependencies = [
  "byteorder",
+ "clap",
  "futures",
  "num_cpus",
  "rocksdb",

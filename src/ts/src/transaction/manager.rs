@@ -34,6 +34,10 @@ pub struct TransactionManager {
     // UndoLog 集合（用于 Atomicity-Rollback）
     undo_logs: RwLock<HashMap<u64, Arc<RwLock<UndoLog>>>>,
 
+    // 未提交事务的写键追踪（用于防止脏读）
+    // key -> set of tx_ids that have written this key but not yet committed
+    uncommitted_keys: RwLock<HashMap<Vec<u8>, HashSet<u64>>>,
+
     // 客户端
     ls_client: Arc<tokio::sync::Mutex<crate::client::LsClient>>,
     ss_client: Arc<tokio::sync::Mutex<crate::client::SsClient>>,
@@ -48,8 +52,19 @@ impl TransactionManager {
         let ls_client_arc = Arc::new(tokio::sync::Mutex::new(ls_client));
         let ss_client_arc = Arc::new(tokio::sync::Mutex::new(ss_client));
 
+        // 从 LS 获取初始快照版本，确保与已持久化数据一致
+        let initial_snapshot = {
+            let mut client = ls_client_arc.lock().await;
+            client.get_max_committed_version().await.unwrap_or(0)
+        };
+        info!("从 LS 获取初始快照版本: {}", initial_snapshot);
+
         // 初始版本
-        let version_manager = Arc::new(VersionManager::new(1, 0, ls_client_arc.clone()));
+        let version_manager = Arc::new(VersionManager::new(
+            1,
+            initial_snapshot,
+            ls_client_arc.clone(),
+        ));
 
         // 冲突检测器
         let conflict_detector = Arc::new(ConflictDetector::new());
@@ -75,6 +90,7 @@ impl TransactionManager {
             wal_manager,
             recovery_manager,
             undo_logs: RwLock::new(HashMap::new()),
+            uncommitted_keys: RwLock::new(HashMap::new()),
             ls_client: ls_client_arc,
             ss_client: ss_client_arc,
         })
@@ -338,6 +354,30 @@ impl TransactionManager {
             return Err(TsError::Timeout(format!("事务 {} 已超时", tx_id)));
         }
 
+        // === ATOMICITY: 先检查当前事务自己的写集（读己之所写） ===
+        {
+            let tx_guard = tx_arc
+                .read()
+                .map_err(|_| TsError::Unknown("获取事务读锁失败".into()))?;
+            if let Some(value) = tx_guard.write_set.get(&key) {
+                // 当前事务已写入该键，直接返回写集中的值
+                // value 为 Some(v) 表示写入的值，None 表示已删除
+                let result = value.clone();
+                drop(tx_guard);
+
+                // 记录读操作（读自身写集也算读）
+                {
+                    let mut tx_guard2 = tx_arc
+                        .write()
+                        .map_err(|_| TsError::Unknown("获取事务写锁失败".into()))?;
+                    tx_guard2.record_read(key.clone(), snapshot_version, result.clone());
+                    let _ = self.conflict_detector.record_read(tx_id, key);
+                }
+
+                return Ok(result);
+            }
+        }
+
         // === ISOLATION-B: Serializable 级别获取读锁 ===
         if isolation_level == rpc::ts::IsolationLevel::Serializable {
             self.lock_manager.try_acquire_lock(
@@ -502,6 +542,18 @@ impl TransactionManager {
 
             tx_guard.record_write(key.clone(), Some(value));
 
+            // 追踪未提交写键（用于防止脏读）
+            {
+                let mut uncommitted = self
+                    .uncommitted_keys
+                    .write()
+                    .map_err(|_| TsError::Unknown("获取uncommitted_keys锁失败".into()))?;
+                uncommitted
+                    .entry(key.clone())
+                    .or_insert_with(HashSet::new)
+                    .insert(tx_id);
+            }
+
             if let Err(e) = self.conflict_detector.record_write(tx_id, key) {
                 warn!("记录写操作失败: {}", e);
             }
@@ -584,6 +636,18 @@ impl TransactionManager {
                 .map_err(|_| TsError::Unknown("获取事务写锁失败".into()))?;
 
             tx_guard.record_write(key.clone(), None);
+
+            // 追踪未提交写键（用于防止脏读）
+            {
+                let mut uncommitted = self
+                    .uncommitted_keys
+                    .write()
+                    .map_err(|_| TsError::Unknown("获取uncommitted_keys锁失败".into()))?;
+                uncommitted
+                    .entry(key.clone())
+                    .or_insert_with(HashSet::new)
+                    .insert(tx_id);
+            }
 
             if let Err(e) = self.conflict_detector.record_write(tx_id, key) {
                 warn!("记录删除操作失败: {}", e);
@@ -955,6 +1019,22 @@ impl TransactionManager {
         {
             let mut undo_logs = self.undo_logs.write().unwrap();
             undo_logs.remove(&tx_id);
+        }
+
+        // 清理未提交写键追踪（提交/回滚后，写操作已变为可见或已撤销）
+        {
+            let mut uncommitted = self.uncommitted_keys.write().unwrap();
+            // 从所有键的写者集合中移除此事务
+            let mut empty_keys = Vec::new();
+            for (key, writers) in uncommitted.iter_mut() {
+                writers.remove(&tx_id);
+                if writers.is_empty() {
+                    empty_keys.push(key.clone());
+                }
+            }
+            for key in empty_keys {
+                uncommitted.remove(&key);
+            }
         }
     }
 

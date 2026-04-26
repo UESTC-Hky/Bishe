@@ -3,98 +3,146 @@ chcp 65001 > nul
 
 echo.
 echo ============================================================
-echo      ACID 测试4：持久性 (Durability)
-echo      事务提交后数据永久保存，即使故障也不丢失
+echo      ACID Test 4: Durability
+echo      Committed data survives crashes and restarts
 echo ============================================================
 echo.
 
-echo [测试 4.1] 提交后数据稳定可读
-echo   操作：写入 3 个键各自提交，连续 3 轮读取验证一致性
-cargo run --bin ce add 1 dr_k1 val_one
-cargo run --bin ce add 1 dr_k2 val_two
-cargo run --bin ce add 1 dr_k3 val_three
-echo ---------- 第 1 轮读取 ----------
-cargo run --bin ce read 1 dr_k1
-cargo run --bin ce read 1 dr_k2
-cargo run --bin ce read 1 dr_k3
-echo ---------- 第 2 轮读取 ----------
-cargo run --bin ce read 1 dr_k1
-cargo run --bin ce read 1 dr_k2
-cargo run --bin ce read 1 dr_k3
-echo ---------- 第 3 轮读取 ----------
-cargo run --bin ce read 1 dr_k1
-cargo run --bin ce read 1 dr_k2
-cargo run --bin ce read 1 dr_k3
-echo [预期] 三轮输出完全一致：val_one, val_two, val_three
+:: ============================================================
+:: 0. Clean and start servers
+:: ============================================================
+echo [Setup] Stopping old servers...
+taskkill /f /im ls.exe /im ss.exe /im ts.exe > nul 2>&1
+timeout /t 1 /nobreak > nul
+echo [Setup] Cleaning old data...
+rmdir /s /q ls_data ss_data wal_logs 2>nul
+echo [Setup] Starting LS...
+start "" target\debug\ls.exe --data-path ./ls_data --listen-addr 127.0.0.1:25002
+timeout /t 3 /nobreak > nul
+echo [Setup] Starting SS...
+start "" target\debug\ss.exe --data-path ./ss_data
+timeout /t 5 /nobreak > nul
+echo [Setup] Starting TS...
+start "" target\debug\ts.exe --ls-addr 127.0.0.1:25002 --ss-addr 127.0.0.1:25001
+timeout /t 3 /nobreak > nul
 echo.
 
-echo [测试 4.2] 删除的持久性
-echo   操作：写 dr_del=todelete -提交 -删 dr_del -提交 -连续 3 轮读
-cargo run --bin ce add 1 dr_del todelete
-cargo run --bin ce delete 1 dr_del
-echo ---------- 第 1 轮读取 ----------
-cargo run --bin ce read 1 dr_del
-echo ---------- 第 2 轮读取 ----------
-cargo run --bin ce read 1 dr_del
-echo ---------- 第 3 轮读取 ----------
-cargo run --bin ce read 1 dr_del
-echo [预期] 三轮均返回"不存在"（删除结果持久）
+set CE=target\debug\ce.exe
+
+:: ============================================================
+:: 4.1 Committed data is stably readable
+:: ============================================================
+echo [Test 4.1] Committed data is stably readable
+echo   Write 3 keys, then read 3 rounds to verify consistency
+%CE% add 1 dr_k1 val_one
+timeout /t 3 /nobreak > nul
+%CE% add 1 dr_k2 val_two
+timeout /t 3 /nobreak > nul
+%CE% add 1 dr_k3 val_three
+timeout /t 3 /nobreak > nul
+echo ---------- Round 1 ----------
+%CE% read 1 dr_k1
+%CE% read 1 dr_k2
+%CE% read 1 dr_k3
+echo ---------- Round 2 ----------
+%CE% read 1 dr_k1
+%CE% read 1 dr_k2
+%CE% read 1 dr_k3
+echo ---------- Round 3 ----------
+%CE% read 1 dr_k1
+%CE% read 1 dr_k2
+%CE% read 1 dr_k3
+echo [Expected] All 3 rounds identical: val_one, val_two, val_three
 echo.
 
-echo [测试 4.3] 多键事务持久
-echo   操作：一个事务写 3 个键，连续 3 轮读取
-cargo run --bin ce add 1 dr_multi_a apple + add dr_multi_b banana + add dr_multi_c cherry
-echo ---------- 第 1 轮读取 ----------
-cargo run --bin ce read 1 dr_multi_a
-cargo run --bin ce read 1 dr_multi_b
-cargo run --bin ce read 1 dr_multi_c
-echo ---------- 第 2 轮读取 ----------
-cargo run --bin ce read 1 dr_multi_a
-cargo run --bin ce read 1 dr_multi_b
-cargo run --bin ce read 1 dr_multi_c
-echo ---------- 第 3 轮读取 ----------
-cargo run --bin ce read 1 dr_multi_a
-cargo run --bin ce read 1 dr_multi_b
-cargo run --bin ce read 1 dr_multi_c
-echo [预期] 三轮输出完全一致：apple, banana, cherry
+:: ============================================================
+:: 4.2 Delete durability
+:: ============================================================
+echo [Test 4.2] Delete durability
+echo   Write then delete, verify 3 rounds of reads return "not found"
+%CE% add 1 dr_del todelete
+timeout /t 3 /nobreak > nul
+%CE% delete 1 dr_del
+echo.
+echo ---------- Wait for sync (3s) ----------
+timeout /t 3 /nobreak > nul
+echo ---------- Round 1 ----------
+%CE% read 1 dr_del
+echo ---------- Round 2 ----------
+%CE% read 1 dr_del
+echo ---------- Round 3 ----------
+%CE% read 1 dr_del
+echo [Expected] All 3 rounds: key not found (delete is durable)
 echo.
 
-echo [测试 4.4] WAL 崩溃恢复测试
-echo   操作：写入 dr_recover=survive 并提交；
-echo         然后需要手动重启 TS 服务以模拟故障恢复
-cargo run --bin ce add 1 dr_recover survive
+:: ============================================================
+:: 4.3 Multi-key transaction durability
+:: ============================================================
+echo [Test 4.3] Multi-key transaction durability
+echo   Write 3 keys in one transaction, read 3 rounds
+%CE% add 1 dr_multi_a apple + add dr_multi_b banana + add dr_multi_c cherry
+timeout /t 3 /nobreak > nul
+echo ---------- Round 1 ----------
+%CE% read 1 dr_multi_a
+%CE% read 1 dr_multi_b
+%CE% read 1 dr_multi_c
+echo ---------- Round 2 ----------
+%CE% read 1 dr_multi_a
+%CE% read 1 dr_multi_b
+%CE% read 1 dr_multi_c
+echo ---------- Round 3 ----------
+%CE% read 1 dr_multi_a
+%CE% read 1 dr_multi_b
+%CE% read 1 dr_multi_c
+echo [Expected] All 3 rounds identical: apple, banana, cherry
 echo.
-echo -----------------------------------------------------------
-echo [验证] 提交成功，读 dr_recover:
-cargo run --bin ce read 1 dr_recover
-echo [预期] 读到 "survive"
+
+:: ============================================================
+:: 4.4 WAL crash recovery
+:: ============================================================
+echo [Test 4.4] WAL crash recovery
+echo   Write dr_recover=survive and commit
+echo   Then restart TS to simulate crash recovery
+%CE% add 1 dr_recover survive
+echo.
+echo ---------- Wait for sync (3s) ----------
+timeout /t 3 /nobreak > nul
+echo ---------- Read dr_recover before restart ----------
+%CE% read 1 dr_recover
+echo [Expected] Read "survive"
 echo.
 echo +----------------------------------------------------------+
-echo ^|  !! 请在另一个终端中执行以下操作：                       ^|
-echo ^|                                                          ^|
-echo ^|  1. 按 Ctrl+C 停止当前 TS 进程                           ^|
-echo ^|  2. 重新运行: cargo run --bin ts                         ^|
-echo ^|                                                          ^|
-echo ^|  模拟系统故障后重启，验证 WAL 恢复机制                    ^|
+echo ^|  Restarting TS to simulate crash recovery...              ^|
 echo +----------------------------------------------------------+
 echo.
-pause
+echo [Recovery] Killing TS process...
+taskkill /f /im ts.exe > nul 2>&1
+timeout /t 2 /nobreak > nul
+echo [Recovery] Restarting TS (WAL recovery should replay now)...
+start "" target\debug\ts.exe --ls-addr 127.0.0.1:25002 --ss-addr 127.0.0.1:25001
+timeout /t 3 /nobreak > nul
 echo.
-echo -----------------------------------------------------------
-echo [验证] 重启后，读 dr_recover:
-cargo run --bin ce read 1 dr_recover
-echo [预期] 读到 "survive"（WAL 恢复成功，数据不丢失）
+echo ---------- After restart: read dr_recover ----------
+%CE% read 1 dr_recover
+echo [Expected] Read "survive" (data survived crash!)
 echo.
-echo [验证] 重启后，读已存在的其他键:
-cargo run --bin ce read 1 dr_k1
-echo [预期] 读到 "val_one"（之前提交的所有数据均恢复）
-cargo run --bin ce read 1 dr_multi_a
-echo [预期] 读到 "apple"（多键事务数据也恢复）
+echo ---------- After restart: read other existing keys ----------
+%CE% read 1 dr_k1
+echo [Expected] Read "val_one" (all previously committed data recovered)
+%CE% read 1 dr_multi_a
+echo [Expected] Read "apple" (multi-key transaction data also recovered)
 echo.
 
+:: ============================================================
+:: Cleanup
+:: ============================================================
 echo ============================================================
-echo      持久性测试完成
-echo      请检查上述每个 [预期] 是否与实际输出一致
+echo      Durability test complete
 echo ============================================================
 echo.
+echo [Cleanup] Stopping servers...
+taskkill /f /im ls.exe /im ss.exe /im ts.exe > nul 2>&1
+echo [Cleanup] Removing test data...
+rmdir /s /q ls_data ss_data wal_logs 2>nul
+echo [Cleanup] Done.
 pause
